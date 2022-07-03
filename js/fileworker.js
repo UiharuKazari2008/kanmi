@@ -20,8 +20,13 @@ about release, "snippets", or to report spillage are to be directed to:
 docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 ====================================================================================== */
 
+const systemglobal = require("../config.json");
+const fs = require("fs");
+const path = require("path");
 (async () => {
 	let systemglobal = require('../config.json');
+	if (process.env.SYSTEM_NAME && process.env.SYSTEM_NAME.trim().length > 0)
+		systemglobal.SystemName = process.env.SYSTEM_NAME.trim()
 	const facilityName = 'FileWorker';
 
 	const sleep = (waitTimeInMs) => new Promise(resolve => setTimeout(resolve, waitTimeInMs));
@@ -70,6 +75,13 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 
 	Logger.printLine("Init", "FileWorker Server I/O", "debug")
 
+	if (process.env.MQ_HOST && process.env.MQ_HOST.trim().length > 0)
+		systemglobal.MQServer = process.env.MQ_HOST.trim()
+	if (process.env.RABBITMQ_DEFAULT_USER && process.env.RABBITMQ_DEFAULT_USER.trim().length > 0)
+		systemglobal.MQUsername = process.env.RABBITMQ_DEFAULT_USER.trim()
+	if (process.env.RABBITMQ_DEFAULT_PASS && process.env.RABBITMQ_DEFAULT_PASS.trim().length > 0)
+		systemglobal.MQPassword = process.env.RABBITMQ_DEFAULT_PASS.trim()
+
 	async function loadDatabaseCache() {
 		Logger.printLine("SQL", "Getting System Parameters", "debug")
 		const _systemparams = await db.query(`SELECT * FROM global_parameters WHERE (system_name = ? OR system_name IS NULL) AND (application = 'fileworker' OR application IS NULL) ORDER BY system_name, application`, [systemglobal.SystemName])
@@ -110,13 +122,6 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 					ACodec: `${_ffmpeg_config[0].param_data.acodec}`,
 					ABitrate: `${_ffmpeg_config[0].param_data.abitrate}`
 				};
-			}
-			const _seq_config = systemparams_sql.filter(e => e.param_key === 'seq.common');
-			if (_seq_config.length > 0 && _seq_config[0].param_data) {
-				if (_seq_config[0].param_data.pickup_base_url)
-					systemglobal.Pickup_Base_URL = _seq_config[0].param_data.pickup_base_url;
-				if (_seq_config[0].param_data.base_url)
-					systemglobal.Base_URL = _seq_config[0].param_data.base_url;
 			}
 
 			const _mq_discord_out = systemparams_sql.filter(e => e.param_key === 'mq.discord.out');
@@ -168,6 +173,47 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 			})
 		}))
 
+		if (systemglobal.WatchFolder_1) {
+			// Create Folder Listing
+			const getDirectories = fs.readdirSync(systemglobal.WatchFolder_1, {withFileTypes: true})
+				.filter(dirent => dirent.isDirectory())
+				.map(dirent => dirent.name)
+			// Add new folder maps
+			FolderPairs.forEach((data, name) => {
+				if (!fs.existsSync(path.join(systemglobal.WatchFolder_1, name))) {
+					if (name !== "MultiPartFolder" && name !== "Data") {
+						fs.mkdirSync(path.join(systemglobal.WatchFolder_1, name));
+						Logger.printLine("FolderInit", `Created new folder ${name}`, "debug")
+					}
+				}
+				if (!init) {
+					console.log(`Registered Folder "${name}" => ${data.id}@${data.server} (Parts Ch: ${data.parts})`)
+				}
+			});
+			// Remove old folder maps
+			getDirectories.forEach(function (foldername) {
+				if (FolderPairs.has(foldername) === false) {
+					fs.readdirSync(path.join(systemglobal.WatchFolder_1, foldername)).forEach((file, index) => {
+						if (file.startsWith(".")) {
+							fs.unlinkSync(path.join(systemglobal.WatchFolder_1, foldername, file));
+						}
+					})
+					if (foldername !== "MultiPartFolder" && foldername !== "Data") {
+						fs.readdirSync(path.join(systemglobal.WatchFolder_1, foldername)).forEach((file, index) => {
+							if (file.startsWith(".")) {
+								fs.unlinkSync(path.join(systemglobal.WatchFolder_1, foldername, file));
+							} else {
+								fs.renameSync(path.join(systemglobal.WatchFolder_1, foldername, file), systemglobal.WatchFolder_1)
+								Logger.printLine("FolderInit", `Found orphan file ${file} in ${foldername}`, "debug")
+							}
+						});
+						fs.rmdirSync(path.join(systemglobal.WatchFolder_1, foldername));
+						Logger.printLine("FolderInit", `Removed folder ${foldername}`, "debug")
+					}
+				}
+			})
+		}
+
 		await Promise.all(_discordservers.rows.map(server => {
 			discordServers.set(server.serverid, server);
 			if (server.serverid === systemglobal.DiscordHomeGuild) {
@@ -194,14 +240,19 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 
 	const mqClient = require('./utils/mqClient')(facilityName, systemglobal);
 
-	if (!fs.existsSync(systemglobal.TempFolder)) {
-		fs.mkdirSync(systemglobal.TempFolder);
-	}
-	if (systemglobal.WatchFolder_1 && !fs.existsSync(systemglobal.WatchFolder_1)) {
-		fs.mkdirSync(systemglobal.WatchFolder_1);
-	}
-	if (systemglobal.PickupFolder && !fs.existsSync(systemglobal.PickupFolder)) {
-		fs.mkdirSync(systemglobal.PickupFolder);
+	try {
+		if (!fs.existsSync(systemglobal.TempFolder)) {
+			fs.mkdirSync(systemglobal.TempFolder);
+		}
+		if (systemglobal.WatchFolder_1 && !fs.existsSync(systemglobal.WatchFolder_1)) {
+			fs.mkdirSync(systemglobal.WatchFolder_1);
+		}
+		if (systemglobal.PickupFolder && !fs.existsSync(systemglobal.PickupFolder)) {
+			fs.mkdirSync(systemglobal.PickupFolder);
+		}
+	} catch (e) {
+		console.error('Failed to create the temp folder, not a issue if your using docker');
+		console.error(e);
 	}
 
 	// Normal Requests
@@ -410,44 +461,6 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 		startWorker2();
 		if (systemglobal.WatchFolder_1) {
 			Logger.printLine('Init', 'File Watching is enabled on this FileWorker instance, now watching for uploads', 'debug')
-			// Create Folder Listing
-			const getDirectories = fs.readdirSync(systemglobal.WatchFolder_1, {withFileTypes: true})
-				.filter(dirent => dirent.isDirectory())
-				.map(dirent => dirent.name)
-			// Add new folder maps
-			FolderPairs.forEach((data, name) => {
-				if (!fs.existsSync(path.join(systemglobal.WatchFolder_1, name))) {
-					if (name !== "MultiPartFolder" && name !== "Data") {
-						fs.mkdirSync(path.join(systemglobal.WatchFolder_1, name));
-						Logger.printLine("FolderInit", `Created new folder ${name}`, "debug")
-					}
-				}
-				if (!init) {
-					console.log(`Registered Folder "${name}" => ${data.id}@${data.server} (Parts Ch: ${data.parts})`)
-				}
-			});
-			// Remove old folder maps
-			getDirectories.forEach(function (foldername) {
-				if (FolderPairs.has(foldername) === false) {
-					fs.readdirSync(path.join(systemglobal.WatchFolder_1, foldername)).forEach((file, index) => {
-						if (file.startsWith(".")) {
-							fs.unlinkSync(path.join(systemglobal.WatchFolder_1, foldername, file));
-						}
-					})
-					if (foldername !== "MultiPartFolder" && foldername !== "Data") {
-						fs.readdirSync(path.join(systemglobal.WatchFolder_1, foldername)).forEach((file, index) => {
-							if (file.startsWith(".")) {
-								fs.unlinkSync(path.join(systemglobal.WatchFolder_1, foldername, file));
-							} else {
-								fs.renameSync(path.join(systemglobal.WatchFolder_1, foldername, file), systemglobal.WatchFolder_1)
-								Logger.printLine("FolderInit", `Found orphan file ${file} in ${foldername}`, "debug")
-							}
-						});
-						fs.rmdirSync(path.join(systemglobal.WatchFolder_1, foldername));
-						Logger.printLine("FolderInit", `Removed folder ${foldername}`, "debug")
-					}
-				}
-			})
 			// Setup Folder Watchers
 			sleep(1000).then(() => {
 				function onboardFileAdd(filePath, groupID) {
@@ -519,7 +532,7 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 					});
 					datawatcher1.on('add', function (filePath) {
 						if (!(filePath.includes('HOLD-') || filePath.includes('PREVIEW-') || filePath.includes('FILEATT-'))) {
-							onboardFileAdd(slash("./" + filePath), "1")
+							onboardFileAdd(slash(filePath), "1")
 						}
 					})
 						.on('error', function (error) {
@@ -533,7 +546,9 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 		} else {
 			Logger.printLine('Init', 'File Watching is disabled on this FileWorker instance!', 'warning')
 		}
-		process.send('ready');
+		if (process.send && typeof process.send === 'function') {
+			process.send('ready');
+		}
 		init = true
 	}
 	// Support Functions
@@ -649,8 +664,6 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 														Logger.printLine("MPFCache", `File ${fileName.replace(/[/\\?%*:|"<> ]/g, '_')} was cached successfully!`, 'info')
 													}
 												})
-												if (MessageContents.userRequest && MessageContents.userRequest !== 'none')
-													mqClient.sendMessage(`File is now available <@!${MessageContents.userRequest.toString()}>${(systemglobal.Base_URL) ? '\nDownload URL: ' + systemglobal.Base_URL + '/stream/' + cacheresponse[0].fileid + '/' + fileName : ''}`, "message", "MPFDownload")
 												rimraf(PartsFilePath, function (err) { });
 												if (systemglobal.FW_Accepted_Videos.indexOf(path.extname(fileName.toString()).split(".").pop().toLowerCase()) !== -1) {
 													if (cacheresponse[0].attachment_hash === null) {
@@ -1729,14 +1742,14 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 					try {
 						const FileBase = path.resolve(path.dirname(object.FilePath.toString()))
 						const FileName = path.basename(object.FilePath.toString())
-						const nativeSplit = spawn("split", ["-b", "7500K", "--verbose", `${FileName}`, `JFS_${filepartsid}.PSF-`], { cwd: FileBase });
+						const nativeSplit = spawn("split", ["-b", (process.platform === "darwin") ? "7500000" : "7500K", `${FileName}`, `JFS_${filepartsid}.PSF-`], { cwd: FileBase });
 
 						nativeSplit.stderr.on("data", data => {
 							Logger.printLine("MPFGen-Native", `${data}`, "error")
 						});
 
 						nativeSplit.on('error', (err) => {
-							mqClient.sendMessage(`Error occurred when splitting the "${object.FilePath.toString()}" for transport - "${err.message}", Ticket will be dropped!`, "err", "MPFGen", err)
+							mqClient.sendMessage(`Error occurred when splitting the "${object.FilePath.toString()}" for transport - "${(err) ? err.message : "Unknown"}", Ticket will be dropped!`, "err", "MPFGen", err)
 							cb(true);
 						});
 
@@ -1760,7 +1773,7 @@ docutrol@acr.moe - 301-399-3671 - docs.acr.moe/docutrol
 									}
 								});
 							} else {
-								mqClient.sendMessage(`Error occurred when splitting the "${object.FilePath.toString()}" for transport - Stop Code ${code}, Ticket will be dropped!`, "err", "MPFGen", err)
+								mqClient.sendMessage(`Error occurred when splitting the "${object.FilePath.toString()}" for transport - Stop Code ${code}, Ticket will be dropped!`, "err", "MPFGen")
 								cb(true);
 							}
 						});

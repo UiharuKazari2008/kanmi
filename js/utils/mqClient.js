@@ -1,4 +1,6 @@
 let systemglobal = require('../../config.json');
+if (process.env.SYSTEM_NAME && process.env.SYSTEM_NAME.trim().length > 0)
+    systemglobal.SystemName = process.env.SYSTEM_NAME.trim()
 
 const os = require('os');
 const { clone } = require('./tools');

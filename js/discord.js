@@ -15,6 +15,8 @@ This code is publicly released and is restricted by its project license
 
 (async () => {
     let systemglobal = require('../config.json');
+    if (process.env.SYSTEM_NAME && process.env.SYSTEM_NAME.trim().length > 0)
+        systemglobal.SystemName = process.env.SYSTEM_NAME.trim()
     const facilityName = 'Discord-IO';
 
     const eris = require('eris');
@@ -88,9 +90,11 @@ This code is publicly released and is restricted by its project license
     let TwitterListsEncoded = new Map();
     let TwitterListAccounts = new Map();
     let TwitterRedirects = new Map();
+    let TwitterCDSBypass = new Map();
     let TwitterAutoLike = new Map();
     let TwitterLikeList = new Map();
     let TwitterPixivLike = new Map();
+    let PixivChannels = new Map();
     let PixivSaveChannel = new Map();
     let Timers = new Map();
     let activeTasks = new Map();
@@ -156,6 +160,8 @@ This code is publicly released and is restricted by its project license
     });
 
     Logger.printLine("Init", "Discord I/O", "info");
+
+
 
     // Shutaura SQL Cache
     async function loadDatabaseCache() {
@@ -266,7 +272,7 @@ This code is publicly released and is restricted by its project license
             const _seq_config = systemparams_sql.filter(e => e.param_key === 'seq.common');
             if (_seq_config.length > 0 && _seq_config[0].param_data) {
                if (_seq_config[0].param_data.base_url)
-                    systemglobal.Base_URL = _seq_config[0].param_data.base_url;
+                    systemglobal.base_url = _seq_config[0].param_data.base_url;
             }
             // Sequenzia Common Configuration
             // seq.common = { base_url: "https://seq.moe/" }
@@ -432,6 +438,9 @@ This code is publicly released and is restricted by its project license
             // discord.overides = { "users" : [], "websocket_is_user": true, "allow_bot_reactions" : [] }
             const _cms_options = systemparams_sql.filter(e => e.param_key === 'cms');
             if (_cms_options.length > 0 && _cms_options[0].param_data) {
+                if (_cms_options[0].param_data.disable_threads) {
+                    systemglobal.CMS_Disable_Threads = _cms_options[0].param_data.disable_threads;
+                }
                 if (_cms_options[0].param_data.timeline_chid) {
                     systemglobal.CMS_Timeline_Parent = _cms_options[0].param_data.timeline_chid;
                 }
@@ -572,6 +581,9 @@ This code is publicly released and is restricted by its project license
             if (item.redirect_taccount !== null) {
                 TwitterRedirects.set(item.listid, item.redirect_taccount);
             }
+            if (item.bypasscds === 1) {
+                TwitterCDSBypass.set(item.listid, item.saveid);
+            }
             if (item.autolike !== null && item.autolike !== 0) {
                 TwitterAutoLike.set(item.listid, (item.redirect_taccount !== null) ? item.redirect_taccount : item.taccount);
             }
@@ -580,6 +592,9 @@ This code is publicly released and is restricted by its project license
             TwitterActivityChannels.set(item.activitychannelid, item.taccount);
         }))
         await Promise.all(pixivaccount.map(item => {
+            PixivChannels.set(item.save_channelid, 1);
+            if (item.save_channelid_nsfw)
+                PixivChannels.set(item.save_channelid_nsfw, 2);
             if (item.like_taccount) {
                 TwitterPixivLike.set(6010879, item.like_taccount);
                 TwitterPixivLike.set(7264269, item.like_taccount);
@@ -589,7 +604,8 @@ This code is publicly released and is restricted by its project license
             if (item.like_taccount_nsfw) {
                 TwitterPixivLike.set(16711724, item.like_taccount_nsfw);
                 TwitterPixivLike.set(16711787, item.like_taccount_nsfw);
-                TwitterPixivLike.set(item.save_channelid_nsfw, item.like_taccount_nsfw);
+                if (item.save_channelid_nsfw)
+                    TwitterPixivLike.set(item.save_channelid_nsfw, item.like_taccount_nsfw);
             }
             pixivreactionsaccount.forEach(acc => {
                 if (item.like_taccount === acc.download_taccount) {
@@ -648,8 +664,13 @@ This code is publicly released and is restricted by its project license
 
     const mqClient = require('./utils/mqClient')(facilityName, systemglobal);
 
-    if (!fs.existsSync(systemglobal.TempFolder)){
-        fs.mkdirSync(systemglobal.TempFolder);
+    try {
+        if (!fs.existsSync(systemglobal.TempFolder)) {
+            fs.mkdirSync(systemglobal.TempFolder);
+        }
+    } catch (e) {
+        console.error('Failed to create the temp folder, not a issue if your using docker');
+        console.error(e);
     }
 
     console.log(`System Configuration:`)
@@ -962,7 +983,8 @@ This code is publicly released and is restricted by its project license
             let ChannelID = "" + MessageContents.messageChannelID.trim().split("\n").join('')
             const ChannelData = discordClient.getChannel(ChannelID)
             if ((typeof ChannelData).toString() === 'undefined') {
-                SendMessage(`Failed to send message, Invalid Channel ID : ${ChannelID.toString().substring(0,128)}`, "err", 'main', "SendData")
+                SendMessage(`Failed to send message, Invalid Channel ID : ${ChannelID.toString().substring(0,128)} from ${MessageContents.fromClient}`, "err", 'main', "SendData")
+                cb(true);
             } else {
                 switch (MessageContents.messageAction) {
                     case 'RequestDownload':
@@ -994,6 +1016,29 @@ This code is publicly released and is restricted by its project license
                         if (MessageContents.messageData !== undefined && !isNaN(parseInt(MessageContents.messageData))) {
                             discordClient.getMessage(ChannelID, MessageContents.messageID)
                                 .then(function(fullmsg) {
+                                    (async () => {
+                                        if ((PixivChannels.has(fullmsg.channel.id) || discordServers.get(fullmsg.guildID).chid_download === fullmsg.channel.id) && fullmsg.content.includes("**🎆 ") && fullmsg.content.includes("** : ***") && fullmsg.attachments.length > 0) {
+                                            if (TwitterPixivLike.has(fullmsg.channel.id) || TwitterPixivLike.has(MessageContents.messageData)) {
+                                                // **🎆 ${messageObject.author.name}** : ***${messageObject.title.replace('🎆 ', '')}${(messageObject.description) ? '\n' + messageObject.description : ''}***
+                                                const foundMessage = await db.query(`SELECT * FROM pixiv_tweets WHERE id = ?`, [fullmsg.id])
+                                                const artistName = fullmsg.content.split('** : ***')[0].split('**🎆').pop().trim();
+                                                const sourceID = fullmsg.content.split('** : ***')[1].split('[').pop().split(']')[0].trim();
+                                                if (foundMessage.error) {
+                                                    SendMessage("SQL Error occurred when retrieving the previouly sent tweets for pixiv", "err", 'main', "SQL", foundMessage.error)
+                                                } else if (foundMessage.rows.length === 0 && ((pixivaccount[0].like_taccount_nsfw !== null && fullmsg.channel.nsfw) || pixivaccount[0].like_taccount !== null)) {
+                                                    await db.query(`INSERT INTO pixiv_tweets SET id = ?`, [fullmsg.id])
+                                                    sendTwitterAction(`Artist: ${artistName}${(sourceID.length > 2) ? '\nSource: https://pixiv.net/en/artworks/' + sourceID : 'Source: Pixiv'}`, 'SendTweet', "send", [fullmsg.attachments[0]], MessageContents.messageData, fullmsg.guildID, []);
+                                                }
+                                                if (sourceID)
+                                                    sendPixivAction(sourceID, 'Like', "add");
+                                            }
+                                        } else {
+                                            const tweetMeta = await db.query(`SELECT listid, tweetid, userid FROM twitter_tweets WHERE channelid = ? AND messageid = ?`, [fullmsg.channel.id, fullmsg.id])
+                                            if (tweetMeta.rows.length > 0 && TwitterCDSBypass.has(tweetMeta.rows[0].listid)) {
+                                                sendTwitterAction(`https://twitter.com/${tweetMeta.rows[0].userid}/status/${tweetMeta.rows[0].tweetid}`, 'LikeRT', "add", undefined, MessageContents.messageData, fullmsg.guildID, [], tweetMeta.rows[0].listid);
+                                            }
+                                        }
+                                    })().then(r => {})
                                     jfsMove(fullmsg, MessageContents.messageData, results => cb(results))
                                 })
                                 .catch((er) => {
@@ -1048,6 +1093,34 @@ This code is publicly released and is restricted by its project license
                                 cb(true);
                             })
                         break;
+                    case 'ActionPost':
+                        if (MessageContents.messageIntent) {
+                            switch (MessageContents.messageIntent) {
+                                case "DefaultDownload":
+                                    discordClient.getMessage(MessageContents.messageChannelID, MessageContents.messageID)
+                                        .then(function(fullmsg) {
+                                            downloadMessageFile(fullmsg, undefined, true)
+                                            cb(true);
+                                        })
+                                        .catch(async (er) => {
+                                            Logger.printLine("Discord", "Command was dropped, unable to get Message from Discord", "warn", er)
+                                            console.error(er)
+                                            if (er && er.message && er.message.includes('Unknown Message')) {
+                                                await db.query(`DELETE FROM twitter_tweets WHERE messageid = ?`, [MessageContents.messageID])
+                                            }
+                                            cb(true);
+                                        })
+                                    break;
+                                default:
+                                    Logger.printLine("Discord", "Command was dropped, unable to take action on post because invalid intent was signaled", "warn", er)
+                                    cb(true);
+                                    break;
+                            }
+                        } else {
+                            Logger.printLine("Discord", "Command was dropped, unable to take action on post because no intent was signaled", "warn", er)
+                            cb(true);
+                        }
+                        break;
                     case 'RemovePost':
                         discordClient.getMessage(ChannelID, MessageContents.messageID)
                             .then(function(fullmsg) {
@@ -1070,7 +1143,7 @@ This code is publicly released and is restricted by its project license
                             printLine('SQL', `Failed to get message from database for ${MessageContents.messageID}`, 'error');
                             cb(false);
                         } else if (messageData.rows.length > 0 && messageData.rows[0].cache_proxy) {
-                            await cacheColor(MessageContents.messageID, `${(!messageData.rows[0].cache_proxy.startsWith('http') ? 'https://cdn.discordapp.com/attachments' : '')}${messageData.rows[0].cache_proxy}`)
+                            await cacheColor(MessageContents.messageID, `${(!messageData.rows[0].cache_proxy.startsWith('http') ? 'https://cdn.discordapp.com/attachments/' : '')}${messageData.rows[0].cache_proxy}`)
                             cb(true);
                         } else if (messageData.rows.length > 0 && messageData.rows[0].attachment_hash) {
                             await cacheColor(MessageContents.messageID, `https://cdn.discordapp.com/attachments/` + ((messageData.rows[0].attachment_hash.includes('/')) ? messageData.rows[0].attachment_hash : `${messageData.rows[0].channel}/${messageData.rows[0].attachment_hash}/${messageData.rows[0].attachment_name}`))
@@ -1754,6 +1827,19 @@ This code is publicly released and is restricted by its project license
                         Logger.printLine("Discord", "Error checking channel message count for first pinning", "warning", e);
                     }
                 }
+                if (MessageContents.tweetMetadata) {
+                    try {
+                        const addTweet = await db.query(`INSERT INTO twitter_tweets SET ?`, [{
+                            messageid: data.id,
+                            channelid: data.channel.id,
+                            listid: MessageContents.tweetMetadata.list,
+                            tweetid: MessageContents.tweetMetadata.id,
+                            userid: MessageContents.tweetMetadata.userId
+                        }])
+                    } catch (e) {
+                        Logger.printLine("Discord", "Failed to save tweet to database", "warning", e);
+                    }
+                }
             }
         } catch (er) {
             SendMessage(`Failed to send message to discord - ${er.message}`, "err", "main", "Send", er.message)
@@ -2285,7 +2371,7 @@ This code is publicly released and is restricted by its project license
                                 return "⁉ Missing required information"
                             }
                             break;
-                        case 'name':
+                        case 'chname':
                             if (args.length > 2) {
                                 const channel = args[1].replace("<#", "").replace(">", "");
                                 let newName = args.filter((e, i) => { if (i > 1) return e }).join(" ")
@@ -2416,8 +2502,8 @@ This code is publicly released and is restricted by its project license
                                                 forceLarge = true
                                             }
 
-                                            SendMessage(`✅ Started Filesystem Repair...`, "system", msg.guildID, "RepairFileSystem", 0, limit, forceLarge)
-                                            messageRecache(result, msg.guildID);
+                                            SendMessage(`✅ Started Filesystem Repair...`, "system", msg.guildID, "RepairFileSystem")
+                                            messageRecache(result, msg.guildID, 0, limit, forceLarge);
                                         } else {
                                             SendMessage(`❌ Failed to start filesystem repair, could not find and folders!`, "system", msg.guildID, "RepairFileSystem")
                                         }
@@ -2476,15 +2562,433 @@ This code is publicly released and is restricted by its project license
             description: "Manage the Discord Filesystem",
             fullDescription: "Allows you to manage channel mappings, create and remove channels\n" +
                 "   **lsmap** - Lists all channel maps\n   **mkmap** - Create channel maps\n      [Channel, Folder]\n   **rmmap** - Removes a channel maps\n      [Folder]\n" +
-                "   **chmap** - Remap a channel\n      [Channel, Folder]\n   **mkdir** - Creates new channel\n      [Name, Type, (nsfw)]\n   **rmdir** - Removes a channel\n      [Channel]\n" +
-                "   **mvf** - Move Message or file\n      [ChFrom, MessageID, ChTo]\n   **rlch** - Move All Messages to Channel\n      [ChFrom, ChTo, (deep), (count)]\n   **rmf** - Delete Multi-Part File\n      [ChFrom, MessageID]\n" +
+                "   **chmap** - Remap a channel\n      [Channel, Folder]\n   **rlch** - Move All Messages to Channel\n      [ChFrom, ChTo, (deep), (count)]\n   **rmrf** - Delete All Files in a Channel\n      [Channel]\n   **chname** - Change the display name of a channel in Sequenzia (Spaces Ok)\n      [Channel, Name]\n" +
+                "   **rnf** - Rename Message or file\n      [ChFrom, FileID, Filename]\n   **mvf** - Move Message or file\n      [ChFrom, MessageID, ChTo]\n   **rmf** - Delete Multi-Part File\n      [ChFrom, MessageID]\n" +
                 "   **lsarc** - List Archive Channel Maps\n   **mkarc** - Create Archive Channel Map\n      [ChFrom, ChTo]\n   **rmarc** - Removes Archive Channel Map\n      [Channel]\n" +
                 "   **mvc** - Manage the Collector\n      **enable** - Enable\n      **disable** - Disable\n      **status** - Displays status\n" +
                 "      **done** - Moves all items to a channel\n         [Channel]\n      **search** - Search a channel for items to add\n         [Channel, Term]\n      **clear** - Clears all\n" +
-                "   **repair** - Repairs a JFS folder or parity\n      [[ChannelID, all, or parts], (num to search), (force), (before id)]",
+                "   **repair** - Repairs a JFS folder or parity\n      [[Channel, all, or parts], (num to search), (force), (before id)]",
             usage: "command [arguments]",
             guildOnly: true
         })
+
+        discordClient.registerCommand("seq", async function (msg,args) {
+            if (isAuthorizedUser('command', msg.member.id, msg.guildID, msg.channel.id)) {
+                if (args.length > 0) {
+                    console.log(args)
+                    switch (args[0].toLowerCase()) {
+                        case 'roles':
+                            if (args.length > 2) {
+                                switch (args[1].toLowerCase()) {
+                                    case 'list':
+                                        try {
+                                            const list = await db.query(`SELECT * FROM discord_permissons`);
+                                            await discordClient.createMessage(msg.channel.id, `Named Permissions from Database`, [{
+                                                file: Buffer.from(JSON.stringify(list.rows, null, '\t')),
+                                                name: `roles.json`
+                                            }])
+                                        } catch (e) {
+                                            return `Error sending metadata - ${e.message}`
+                                        }
+                                        break;
+                                    case 'assign':
+                                        const assignRoles = args[2].replace("<@&", "").replace(">", "");
+                                        let assignedName = null
+                                        if (args.length > 3) {
+                                            assignedName = args[3]
+                                        }
+                                        const results = await db.query(`UPDATE discord_permissons SET name = ? WHERE role = ?`, [assignedName, assignRoles])
+                                        console.log(results)
+                                        return `Updated Role`
+                                    default:
+                                        return "⁉ Unknown Command"
+                                }
+                            } else {
+                                SendMessage("⁉ Missing required information", "system", msg.guildID, "RenameChannel")
+                            }
+                            break;
+                        case 'layout':
+                            if (args.length > 2) {
+                                switch (args[1].toLowerCase()) {
+                                    case 'super':
+                                        switch (args[2].toLowerCase()) {
+                                            case 'list':
+                                                try {
+                                                    const list = await db.query(`SELECT * FROM sequenzia_superclass`);
+                                                    await discordClient.createMessage(msg.channel.id, `Superclass Metadata from Database`, [{
+                                                        file: Buffer.from(JSON.stringify(list.rows, null, '\t')),
+                                                        name: `superclass.json`
+                                                    }])
+                                                } catch (e) {
+                                                    return `Error sending metadata - ${e.message}`
+                                                }
+                                                break;
+                                            case 'update':
+                                                if (args.length > 4) {
+                                                    const superID = args[3].trim();
+                                                    let object = {};
+                                                    switch (args[4].toLowerCase()) {
+                                                        case 'id':
+                                                            object.super = args[5].trim();
+                                                            break;
+                                                        case 'name':
+                                                            object.name = args.splice(5).join(' ').trim();
+                                                            break;
+                                                        case 'position':
+                                                            object.position = parseInt(args[5].trim())
+                                                            if (isNaN(object.position))
+                                                                return `❌ Position must be a number!`
+                                                            break;
+                                                        case 'uri':
+                                                            object.uri = args[5].trim();
+                                                            break;
+                                                        default:
+                                                            return "⁉ Unknown Sub Command"
+                                                    }
+                                                    if (Object.keys(object).length > 0 && superID.length > 0) {
+                                                        const results = await db.query(`UPDATE sequenzia_superclass SET ? WHERE super = ?`, [object, superID])
+                                                        return `Updated Database, Wait for changes to be cached on Sequenzia and reload your account.`
+                                                    }
+                                                } else {
+                                                    return "⁉ Missing required information"
+                                                }
+                                                break;
+                                            case 'create':
+                                                if (args.length > 5) {
+                                                    const superID = args[3].trim();
+                                                    const superURI = args[4].trim();
+                                                    const superPosition = parseInt(args[5].trim());
+                                                    if (isNaN(superPosition))
+                                                        return `❌ Position must be a number!`
+                                                    const superName = args.splice(6).join(' ').trim();
+
+                                                    await db.query(`INSERT INTO sequenzia_superclass SET ?`, [{
+                                                        super: superID,
+                                                        name: superName,
+                                                        uri: superURI,
+                                                        position: superPosition
+                                                    }])
+                                                    return `Updated Database, Assign Classes to the new super`
+                                                } else {
+                                                    return "⁉ Missing required information\nFormat: SUPERID URI POSITION NAME"
+                                                }
+                                            case 'remove':
+                                                const superID = args[3].trim();
+                                                await db.query(`DELETE FROM sequenzia_superclass WHERE super = ?`, [superID])
+                                                return `Updated Database, Super was removed`
+                                            default:
+                                                return "⁉ Unknown Command"
+                                        }
+                                        break;
+                                    case 'class':
+                                        switch (args[2].toLowerCase()) {
+                                            case 'list':
+                                                try {
+                                                    const list = await db.query(`SELECT * FROM sequenzia_class`);
+                                                    await discordClient.createMessage(msg.channel.id, `Class Metadata from Database`, [{
+                                                        file: Buffer.from(JSON.stringify(list.rows, null, '\t')),
+                                                        name: `class.json`
+                                                    }])
+                                                } catch (e) {
+                                                    return `Error sending metadata - ${e.message}`
+                                                }
+                                                break;
+                                            case 'update':
+                                                if (args.length > 4) {
+                                                    const classID = args[3].trim();
+                                                    let object = {};
+                                                    switch (args[4].toLowerCase()) {
+                                                        case 'id':
+                                                            object.class = args[5].trim();
+                                                            break;
+                                                        case 'super':
+                                                            object.super = args[5].trim();
+                                                            break;
+                                                        case 'name':
+                                                            object.name = args.splice(5).join(' ').trim();
+                                                            break;
+                                                        case 'icon':
+                                                            object.icon = args.splice(5).join(' ').trim();
+                                                            break;
+                                                        case 'position':
+                                                            object.position = parseInt(args[5].trim())
+                                                            if (isNaN(object.position))
+                                                                return `❌ Position must be a number!`
+                                                            break;
+                                                        case 'uri':
+                                                            object.uri = args[5].trim();
+                                                            if (object.uri.length === 0)
+                                                                object.uri = null
+                                                            break;
+                                                        default:
+                                                            return "⁉ Unknown Sub Command"
+                                                    }
+                                                    if (Object.keys(object).length > 0 && classID.length > 0) {
+                                                        const results = await db.query(`UPDATE sequenzia_class SET ? WHERE class = ?`, [object, classID])
+                                                        return `Updated Database, Wait for chnages to be cached on Sequenzia and reload your account.`
+                                                    }
+                                                } else {
+                                                    return "⁉ Missing required information"
+                                                }
+                                                break;
+                                            case 'create':
+                                                if (args.length > 6) {
+                                                    const classSuper = args[3].trim();
+                                                    const classID = args[4].trim();
+                                                    const classIcon = args[5].trim();
+                                                    const classPosition = parseInt(args[6].trim());
+                                                    if (isNaN(classPosition))
+                                                        return `❌ Position must be a number!`
+                                                    const className = args.splice(7).join(' ').trim();
+
+                                                    await db.query(`INSERT INTO sequenzia_class SET ?`, [{
+                                                        super: classSuper,
+                                                        class: classID,
+                                                        icon: classIcon,
+                                                        name: className,
+                                                        position: classPosition
+                                                    }])
+                                                    return `Updated Database, Assign Channels to the new class`
+                                                } else {
+                                                    return "⁉ Missing required information\nFormat: SUPERID CLASSID FA-ICON POSITION NAME"
+                                                }
+                                            case 'remove':
+                                                const classID = args[3].trim();
+                                                await db.query(`DELETE FROM sequenzia_class WHERE class = ?`, [classID])
+                                                return `Updated Database, Class removed`
+                                            default:
+                                                return "⁉ Unknown Command"
+                                        }
+                                        break;
+                                    case 'virtual_channel':
+                                        switch (args[2].toLowerCase()) {
+                                            case 'list':
+                                                try {
+                                                    const list = await db.query(`SELECT * FROM kanmi_virtual_channels`);
+                                                    await discordClient.createMessage(msg.channel.id, `Virtual Channels Metadata from Database`, [{
+                                                        file: Buffer.from(JSON.stringify(list.rows, null, '\t')),
+                                                        name: `virtual_channels.json`
+                                                    }])
+                                                } catch (e) {
+                                                    return `Error sending metadata - ${e.message}`
+                                                }
+                                                break;
+                                            case 'update':
+                                                if (args.length > 4) {
+                                                    const classID = args[3].trim();
+                                                    let object = {};
+                                                    switch (args[4].toLowerCase()) {
+                                                        case 'id':
+                                                            object.virtual_cid = args[5].trim();
+                                                            break;
+                                                        case 'name':
+                                                            object.name = args.splice(5).join(' ').trim();
+                                                            break;
+                                                        case 'description':
+                                                            object.description = args.splice(5).join(' ').trim();
+                                                            break;
+                                                        case 'uri':
+                                                            object.uri = args[5].trim();
+                                                            if (object.uri.length === 0)
+                                                                object.uri = null
+                                                            break;
+                                                        default:
+                                                            return "⁉ Unknown Sub Command"
+                                                    }
+                                                    if (Object.keys(object).length > 0 && classID.length > 0) {
+                                                        const results = await db.query(`UPDATE kanmi_virtual_channels SET ? WHERE virtual_cid = ?`, [object, classID])
+                                                        return `Updated Database, Wait for chnages to be cached on Sequenzia and reload your account.`
+                                                    }
+                                                } else {
+                                                    return "⁉ Missing required information"
+                                                }
+                                                break;
+                                            case 'create':
+                                                if (args.length > 6) {
+                                                    const classID = args[3].trim();
+                                                    const className = args.splice(4).join(' ').trim();
+
+                                                    await db.query(`INSERT INTO kanmi_virtual_channels SET ?`, [{
+                                                        virtual_cid: classID,
+                                                        name: className
+                                                    }])
+                                                    return `Updated Database, Assign Channels to the new class`
+                                                } else {
+                                                    return "⁉ Missing required information\nFormat: VCID NAME"
+                                                }
+                                            case 'remove':
+                                                const classID = args[3].trim();
+                                                await db.query(`DELETE FROM kanmi_virtual_channels WHERE virtual_cid = ?`, [classID])
+                                                return `Updated Database, Class removed`
+                                            default:
+                                                return "⁉ Unknown Command"
+                                        }
+                                        break;
+                                    case 'channel':
+                                        switch (args[2].toLowerCase()) {
+                                            case 'list':
+                                                try {
+                                                    const list = await db.query(`SELECT channelid, serverid, parent, virtual_cid, name, nice_name, nice_title, classification, uri, watch_folder, notify, role, role_write, role_manage, description, nsfw FROM kanmi_channels WHERE classification IS NOT NULL AND classification != 'system' AND classification != 'timeline'`);
+
+                                                    await discordClient.createMessage(msg.channel.id, `Channel Metadata from Database`, [{
+                                                        file: Buffer.from(JSON.stringify(list.rows, null, '\t')),
+                                                        name: `channels.json`
+                                                    }])
+                                                } catch (e) {
+                                                    return `Error sending metadata - ${e.message}`
+                                                }
+                                                break;
+                                            case 'update':
+                                                if (args.length > 4) {
+                                                    const ChannelID = args[3].replace("<#", "").replace(">", "");
+                                                    let object = {};
+                                                    let updateFW = false;
+                                                    switch (args[4].toLowerCase()) {
+                                                        case 'class':
+                                                            object.classification = args[5].trim();
+                                                            break;
+                                                        case 'notify':
+                                                            object.notify = args[5].replace("<#", "").replace(">", "");
+                                                            break;
+                                                        case 'name':
+                                                            object.nice_name = args.splice(5).join(' ').trim();
+                                                            break;
+                                                        case 'title':
+                                                            object.nice_title = args.splice(5).join(' ').trim();
+                                                            break;
+                                                        case 'folder':
+                                                            object.watch_folder = args.splice(5).join(' ').trim();
+                                                            updateFW = true
+                                                            break;
+                                                        case 'vcid':
+                                                            object.virtual_cid = parseInt(args[5].trim())
+                                                            if (isNaN(object.virtual_cid))
+                                                                return `❌ Virtual Channel ID must be a number!`
+                                                            break;
+                                                        case 'uri':
+                                                            object.uri = args[5].trim();
+                                                            if (object.uri.length === 0)
+                                                                object.uri = null
+                                                            break;
+                                                        case 'read':
+                                                            if (isNaN(parseInt(args[5].replace("<@&", "").replace(">", "")))) {
+                                                                object.role = args[5]
+                                                            } else {
+                                                                const role_name = await db.query(`SELECT name
+                                                                                            FROM discord_permissons
+                                                                                            WHERE role = ?`, [args[5].replace("<@&", "").replace(">", "")]);
+                                                                if (role_name.rows.length > 0 & role_name.rows[0].name !== null) {
+                                                                    object.role = role_name.rows[0].name
+                                                                } else {
+                                                                    return `❌ Roles does not exist or has not been assigned a name`
+                                                                }
+                                                            }
+                                                            break;
+                                                        case 'write':
+                                                            if (isNaN(parseInt(args[5].replace("<@&", "").replace(">", "")))) {
+                                                                object.role_write = args[5]
+                                                            } else {
+                                                                const role_name = await db.query(`SELECT name
+                                                                                            FROM discord_permissons
+                                                                                            WHERE role = ?`, [args[5].replace("<@&", "").replace(">", "")]);
+                                                                if (role_name.rows.length > 0 & role_name.rows[0].name !== null) {
+                                                                    object.role_write = role_name.rows[0].name
+                                                                } else {
+                                                                    return `❌ Roles does not exist or has not been assigned a name`
+                                                                }
+                                                            }
+                                                            break;
+                                                        case 'manage':
+                                                            if (isNaN(parseInt(args[5].replace("<@&", "").replace(">", "")))) {
+                                                                object.role_manage = args[5]
+                                                            } else {
+                                                                const role_name = await db.query(`SELECT name
+                                                                                            FROM discord_permissons
+                                                                                            WHERE role = ?`, [args[5].replace("<@&", "").replace(">", "")]);
+                                                                if (role_name.rows.length > 0 & role_name.rows[0].name !== null) {
+                                                                    object.role_manage = role_name.rows[0].name
+                                                                } else {
+                                                                    return `❌ Roles does not exist or has not been assigned a name`
+                                                                }
+                                                            }
+                                                            break;
+                                                        default:
+                                                            return "⁉ Unknown Sub Command"
+                                                    }
+                                                    if (Object.keys(object).length > 0 && ChannelID.length > 0) {
+                                                        const results = await db.query(`UPDATE kanmi_channels SET ? WHERE channelid = ?`, [object, ChannelID])
+                                                        return `Updated Database, Wait for changes to be cached on Sequenzia and reload your account.`
+                                                        if (updateFW) {
+                                                            mqClient.sendCmd('fileworker', 'RESET');
+                                                        }
+                                                    }
+                                                } else {
+                                                    return "⁉ Missing required information"
+                                                }
+                                                break;
+                                            case 'create-parent':
+                                                if (args.length > 3) {
+                                                    let parentName;
+                                                    let parentServer = parseInt(args[3].trim());
+                                                    if (isNaN(parentServer)) {
+                                                        parentServer = msg.guildID;
+                                                        parentName = args.splice(3).join(' ').trim();
+                                                    } else {
+                                                        parentServer = msg.guildID;
+                                                        parentName = args.splice(4).join(' ').trim();
+                                                    }
+                                                    try {
+                                                        const parentCreate = await discordClient.createChannel(parentServer, parentName, 4);
+                                                        const guildRoles = await discordClient.getRESTGuildRoles(parentCreate.guild.id);
+                                                        const roleSystem = guildRoles.filter(e => e.name === "⚡ System Engine").map(async e => {
+                                                            return await discordClient.editChannelPermission(parentCreate.id, e.id, 395140262992, 0, 0, `Create new parent, permissions for ${e.name}`);
+                                                        })
+                                                        const roleAdminMode = guildRoles.filter(e => e.name === "🔓 Admin Mode").map(async e => {
+                                                            return await discordClient.editChannelPermission(parentCreate.id, e.id, 17183089744, 0, 0, `Create new parent, permissions for ${e.name}`);
+                                                        })
+                                                        const roleReadOnly = guildRoles.filter(e => e.name === "📀 Data Reader").map(async e => {
+                                                            return await discordClient.editChannelPermission(parentCreate.id, e.id, 1115136, 0, 0, `Create new parent, permissions for ${e.name}`);
+                                                        })
+                                                        if (parentCreate, guildRoles, roleSystem, roleAdminMode, roleReadOnly) {
+                                                            return `Create Parent, Please move the channel to the position you want and use the layout commands to configure class and role access`
+                                                        } else {
+                                                            return `Create Failed - A Task Failed`
+                                                        }
+                                                    } catch (e) {
+                                                        return `Create Failed - ${e.message}`
+                                                    }
+                                                } else {
+                                                    return "⁉ Missing required information, Provide a name and or a serverID"
+                                                }
+                                            default:
+                                                return "⁉ Unknown Command"
+                                        }
+                                        break;
+                                    default:
+                                        SendMessage("⁉ Unknown Command", "system", msg.guildID, "LayoutManager")
+                                        break;
+                                }
+                            } else {
+                                SendMessage("⁉ Missing required information", "system", msg.guildID, "LayoutManager")
+                            }
+                            break;
+                        default:
+                            SendMessage("⁉ Unknown Command", "system", msg.guildID, "SequenziaManager")
+                            break;
+                    }
+                } else {
+                    SendMessage("⁉ Missing required information", "system", msg.guildID, "SequenziaManager")
+                }
+            }
+        }, {
+            argsRequired: true,
+            caseInsensitive: true,
+            description: "Manage Sequenzia",
+            fullDescription: "Manage Features Related to the Sequenzia Interface\nUsage: https://github.com/UiharuKazari2008/sequenzia-compose/wiki/Administration#layout-commands",
+            usage: "command [arguments]",
+            guildOnly: true
+        })
+
         discordClient.registerCommand("clr", function (msg,args) {
             if (isAuthorizedUser('command', msg.member.id, msg.guildID, msg.channel.id) || isAuthorizedUser('commandPub', msg.member.id, msg.guildID, msg.channel.id)) {
                 if (args.length > 0) {
@@ -3877,6 +4381,7 @@ This code is publicly released and is restricted by its project license
             let partsDisabled = false;
             let cdsAccess = false;
             let backupInterval = 3600000;
+            let ignoreQuery = [];
             if (configForHost.rows.length > 0) {
                 const _backup_config = configForHost.rows.filter(e => e.param_key === 'backup');
                 if (_backup_config.length > 0 && _backup_config[0].param_data) {
@@ -3887,11 +4392,21 @@ This code is publicly released and is restricted by its project license
                     if (_backup_config[0].param_data.cache_base_path || _backup_config[0].param_data.pickup_base_path)
                         cdsAccess = true;
                 }
+                const _backup_ignore = configForHost.rows.filter(e => e.param_key === 'backup.ignore');
+                if (_backup_ignore.length > 0 && _backup_ignore[0].param_data) {
+                    if (_backup_ignore[0].param_data.channels)
+                        ignoreQuery.push(..._backup_ignore[0].param_data.channels.map(e => `channel != '${e}'`))
+                    if (_backup_ignore[0].param_data.servers)
+                        ignoreQuery.push(..._backup_ignore[0].param_data.servers.map(e => `server != '${e}'`))
+                }
             }
-            const fileCounts = await db.query(`SELECT COUNT(x.eid) AS backup_needed FROM (SELECT * FROM kanmi_records WHERE source = 0 AND ((attachment_hash IS NOT NULL AND attachment_extra IS NULL)${(cdsAccess) ? ' OR (filecached IS NOT NULL AND filecached = 1)' : ''})) x LEFT OUTER JOIN (SELECT * FROM kanmi_backups WHERE system_name = ?) y ON (x.eid = y.eid) WHERE y.bid IS NULL`, [row.system_name]);
+
+
+
+            const fileCounts = await db.query(`SELECT COUNT(x.eid) AS backup_needed FROM (SELECT * FROM kanmi_records WHERE source = 0 AND ((attachment_hash IS NOT NULL AND attachment_extra IS NULL)${(cdsAccess) ? ' OR (filecached IS NOT NULL AND filecached = 1)' : ''})${(ignoreQuery.length > 0) ? ' AND (' + ignoreQuery.join(' AND ') + ')' : ''}) x LEFT OUTER JOIN (SELECT * FROM kanmi_backups WHERE system_name = ?) y ON (x.eid = y.eid) WHERE y.bid IS NULL`, [row.system_name]);
             let partCounts = { rows: [] }
             if (!partsDisabled) {
-                partCounts = await db.query(`SELECT COUNT(x.partmessageid) AS backup_needed FROM (SELECT kanmi_records.eid, kanmi_records.fileid, kanmi_records.source, discord_multipart_files.messageid AS partmessageid FROM discord_multipart_files, kanmi_records WHERE discord_multipart_files.fileid = kanmi_records.fileid AND discord_multipart_files.valid = 1 AND kanmi_records.source = 0) x LEFT OUTER JOIN (SELECT * FROM discord_multipart_backups WHERE system_name = ?) y ON (x.partmessageid = y.messageid) WHERE y.bid IS NULL`, [row.system_name]);
+                partCounts = await db.query(`SELECT COUNT(x.partmessageid) AS backup_needed FROM (SELECT kanmi_records.eid, kanmi_records.fileid, kanmi_records.source, discord_multipart_files.messageid AS partmessageid FROM discord_multipart_files, kanmi_records WHERE discord_multipart_files.fileid = kanmi_records.fileid AND discord_multipart_files.valid = 1 AND kanmi_records.source = 0${(ignoreQuery.length > 0) ? ' AND (' + ignoreQuery.join(' AND ') + ')' : ''}) x LEFT OUTER JOIN (SELECT * FROM discord_multipart_backups WHERE system_name = ?) y ON (x.partmessageid = y.messageid) WHERE y.bid IS NULL`, [row.system_name]);
             }
             return {
                 hostname: row.system_name,
@@ -3991,6 +4506,10 @@ This code is publicly released and is restricted by its project license
                             }
                         }
                     } else {
+                        if (e.data.cleanup) {
+                            systemWarning = true;
+                            bannerWarnings.push(`🗄 Sync System ${getPrefix(i, a.length)}"${_bcF[0].hostname}" is cleaning up the filesystem`)
+                        }
                         if (((e.data.timestamp && _bcF[0]) ? ((Date.now().valueOf() - e.data.timestamp) >= (_bcF[0].interval * 2)) : false)) {
                             systemWarning = true;
                             bannerWarnings.push(`🗄 Sync System ${getPrefix(i, a.length)}"${_bcF[0].hostname}" has not responded sense <t:${(e.data.timestamp / 1000).toFixed(0)}:R>`)
@@ -4451,13 +4970,13 @@ This code is publicly released and is restricted by its project license
         if (type === "listManager" && !TwitterLists.has(chid) && !(embed && embed.length > 0 && TwitterListsEncoded.has(embed[0].color))) {
             SendMessage("The specified Twitter list was not found!", "err", guildid,"Twitter")
         } else {
-            if (overide || TwitterLists.has(chid) || (embed && embed.length > 0 && TwitterListsEncoded.has(embed[0].color)) || TwitterLikeList.has(chid) || (embed && embed.length > 0 && TwitterPixivLike.has(embed[0].color)) || TwitterPixivLike.has(chid) || TwitterActivityChannels.has(chid) || (discordServers.has(guildid) && chid === discordServers.get(guildid).chid_download)) {
+            if (overide || TwitterCDSBypass.has(overide) || TwitterLists.has(chid) || (embed && embed.length > 0 && TwitterListsEncoded.has(embed[0].color)) || TwitterLikeList.has(chid) || (embed && embed.length > 0 && TwitterPixivLike.has(embed[0].color)) || TwitterPixivLike.has(chid) || TwitterActivityChannels.has(chid) || (discordServers.has(guildid) && chid === discordServers.get(guildid).chid_download)) {
                 let originalembeds = []
                 let listID = ''
                 if (embed) {
                     originalembeds = embed
                 }
-                if (discordServers.has(guildid) && chid === discordServers.get(guildid).chid_download) {
+                if (!TwitterCDSBypass.has(overide) && discordServers.has(guildid) && chid === discordServers.get(guildid).chid_download) {
                     mqClient.sendData(`${systemglobal.Twitter_In}`, {
                         fromWorker: systemglobal.SystemName,
                         botSelfID: selfstatic.id,
@@ -4476,6 +4995,8 @@ This code is publicly released and is restricted by its project license
                 } else {
                     if (TwitterLikeList.has(chid)) {
                         listID = TwitterLikeList.get(chid)
+                    } else if (TwitterCDSBypass.has(overide)) {
+                        listID = overide
                     } else if (embed && embed.length > 0 && TwitterListsEncoded.has(embed[0].color)) {
                         listID = TwitterListsEncoded.get(embed[0].color);
                     } else {
@@ -4558,13 +5079,15 @@ This code is publicly released and is restricted by its project license
             PostID = body
         } else if (typeof body === 'string') {
             PostID = body.split(' - ').pop().split(':')[0]
-        } else if (body.url) {
+        } else if (body.hasOwnProperty('url')) {
             PostID = body.url.split('/').pop();
             PostName = (body.title) ? body.title : undefined
             PostArtist = (body.author) ? body.author.name.split(") - ")[0] : undefined
+        } else {
+            PostID = body
         }
         try {
-            if (systemglobal.CMS_Timeline_Parent && createThread) {
+            if (systemglobal.CMS_Timeline_Parent && createThread && !systemglobal.CMS_Disable_Threads) {
                 const newMessage = await discordClient.createMessage((chid) ? chid : systemglobal.CMS_Timeline_Parent, (type === 'DownloadUser' || type === 'DownloadPost') ? `Downloading ${PostID} illustrations` : `Downloading related posts to ${PostID}`)
                 if (newMessage) {
                     const newThread = await discordClient.createThreadWithMessage(newMessage.channel.id, newMessage.id, {
@@ -4615,7 +5138,7 @@ This code is publicly released and is restricted by its project license
             if (fullmsg.embeds[0] && fullmsg.embeds[0].description !== undefined) {
                 messageText += `**${fullmsg.embeds[0].description}**\n`
             }
-            messageEdited.content = `${messageText}**🎆 ${fullmsg.embeds[0].author.name}** : ***${fullmsg.embeds[0].title.replace('🎆 ', '')}***`
+            messageEdited.content = `${messageText}**🎆 ${fullmsg.embeds[0].author.name}** : ***${fullmsg.embeds[0].title.replace('🎆 ', '')}${(fullmsg.embeds[0].description) ? '\n' + fullmsg.embeds[0].description : ''}***`
             let image = (fullmsg.embeds[0].image) ? fullmsg.embeds[0].image : (fullmsg.attachments[0]) ? fullmsg.attachments[0] : undefined;
             image.filename = getIDfromText(image.url)
             messageEdited.attachments = [ image ];
@@ -4848,7 +5371,7 @@ This code is publicly released and is restricted by its project license
                         let chid = undefined
                         const username = urlItem.split('/').pop().trim()
                         try {
-                            if (systemglobal.CMS_Timeline_Parent) {
+                            if (systemglobal.CMS_Timeline_Parent && !systemglobal.CMS_Disable_Threads) {
                                 const newMessage = await discordClient.createMessage(systemglobal.CMS_Timeline_Parent, `Downloading ${username} illustrations`)
                                 if (newMessage) {
                                     const newThread = await discordClient.createThreadWithMessage(newMessage.channel.id, newMessage.id, {
@@ -5147,7 +5670,7 @@ This code is publicly released and is restricted by its project license
                             if (delay) {
                                 discordClient.editMessage(message.channel.id, message.id, `<:Download:830552108377964615> **Downloaded Successfully!**`)
                                     .catch((er) => {
-                                        SendMessage("There was a error updating the old message", "err", message.guildID, "Move", er)
+
                                     })
                             }
                             try {
@@ -5876,6 +6399,42 @@ This code is publicly released and is restricted by its project license
                                 sqlObject.colorB = options.color.value[2];
                                 sqlObject.dark_color = options.color.isDark;
                             }
+                            /*sqlObject.attachment_type = ((r,n) => {
+                                const _n = ((r) ? r : n).split('.').pop().toLowerCase()
+                                if (_n.startsWith('jp') || _n === 'jfif') // JPEG
+                                    return 1
+                                else if (_n === 'png') // PNG
+                                    return 2
+                                else if (_n === 'tiff') // TIFF
+                                    return 3
+                                else if (_n === 'bmp') // Bitmap
+                                    return 4
+                                else if (_n === 'webp') // WebP
+                                    return 5
+                                else if (_n === 'heif') // HEIF
+                                    return 6
+                                else if (_n.startsWith('gif')) // GIF
+                                    return 10
+                                else if (_n === 'psd' || _n === 'psb') // Photoshop
+                                    return 50
+                                else if (_n === 'mp4' || _n === 'mpeg4' || _n === 'mov' || _n === 'm4v' || _n === 'webm') // Possible Web Video
+                                    return 20
+                                else if (_n === 'ts' || _n === 'mkv' || _n === 'm2ts' || _n === 'mts') // Non-Web Video
+                                    return 21
+                                else if (_n === 'mp3' || _n === 'm4a' || _n === 'ogg' || _n === 'oga' || _n === 'mogg' || _n === 'opus' || _n === 'wav') // Web Audio
+                                    return 40
+                                else if (_n === 'flac' || _n === 'aiff' || _n === 'alac' || _n === 'wma') // Non-Web Audio
+                                    return 41
+                                else if (_n.startsWith('unity') || _n === 'material' || _n === 'shader' || _n === 'vrca') // Unity Format
+                                    return 61
+                                else if (_n === 'fbx' || _n === 'dae' || _n === 'obj' || _n.startsWith('c4')) // 3D Format
+                                    return 62
+                                else if (_n === 'zip' || _n === 'tar' || _n === 'rar' || _n.startsWith('7z') || _n.startsWith('bz')) // Archive
+                                    return 80
+                                else if (_n === 'iso' || _n === 'bin' || _n === 'cd' || _n === 'img') // Archive Disk
+                                    return 81
+                                return 0;
+                            })(sqlObject.real_filename, sqlObject.attachment_name)*/
                             // Write to database
                             const addedMessage = await db.query(`INSERT IGNORE INTO kanmi_records SET ?`, [sqlObject]);
                             if (addedMessage.error) {
@@ -5899,7 +6458,7 @@ This code is publicly released and is restricted by its project license
                                 if (chDbval.notify !== null) {
                                     try {
                                         let channelName = (chDbval.nice_name !== null) ? chDbval.nice_name : msg.channel.name;
-                                        //systemglobal.Base_URL
+                                        //systemglobal.base_url
                                         const guildInfo = discordClient.guilds.get(msg.guildID)
                                         let embedText = sqlObject.content_full
                                         if (sqlObject.fileid) {
@@ -5937,8 +6496,8 @@ This code is publicly released and is restricted by its project license
                                                 "url": (sqlObject.cache_proxy) ? `${(!sqlObject.cache_proxy.startsWith('http') ? 'https://cdn.discordapp.com/attachments' : '')}${sqlObject.cache_proxy}` : `https://cdn.discordapp.com/attachments/` + ((sqlObject.attachment_hash.includes('/')) ? sqlObject.attachment_hash : `${sqlObject.channel}/${sqlObject.attachment_hash}/${sqlObject.attachment_name}`)
                                             }
                                         }
-                                        if (systemglobal.Base_URL)
-                                            embed["url"] = `${systemglobal.Base_URL}${(embed.thumbnail || embed.image) ? 'gallery' : 'cards'}?channel=${msg.channel.id}&search=id:${msg.id}&nsfw=true`
+                                        if (systemglobal.base_url)
+                                            embed["url"] = `${systemglobal.base_url}${(embed.thumbnail || embed.image) ? 'gallery' : 'cards'}?channel=${msg.channel.id}&search=id:${msg.id}&nsfw=true`
                                         await Promise.all(chDbval.notify.split(' ').map(async ch => {
                                             try {
                                                 await discordClient.createMessage(ch, { embed });
@@ -6205,6 +6764,7 @@ This code is publicly released and is restricted by its project license
         }
         if (!bulk)
             activeTasks.delete(`DEL_MSG_${msg.id}`);
+        await db.query(`DELETE FROM twitter_tweets WHERE messageid = ?`, [msg.id])
     }
     async function messageDeleteBulk(msg_array) {
         const dateNow = new Date().valueOf();
@@ -6284,7 +6844,7 @@ This code is publicly released and is restricted by its project license
                                 }
                                 if (channelid.length === 1) {
                                     getMessages(startBefore, true)
-                                } else if (forceBypass === true && find_response.rows.length < 10000) {
+                                } else if (forceBypass === true || find_response.rows.length < 10000) {
                                     getMessages(startBefore, true)
                                 } else {
                                     SendMessage(`Skipped repairing <#${channelItem.channelid}> because there are more then 10000 items!`, "err", 'main', "RepairFileSystem")
@@ -6441,8 +7001,8 @@ This code is publicly released and is restricted by its project license
     // Discord Events - Actions
     function messageReactionAdd(msg, emoji, user) {
         const userID = (user.id) ? user.id : user
-        const isBot = discordClient.users.get(userID).is_bot
-        if ((!isBot || (systemglobal.Discord_Allow_Reactions_From_Bots && systemglobal.Discord_Allow_Reactions_From_Bots.lenth > 0 && systemglobal.Discord_Allow_Reactions_From_Bots.indexOf(userID) !== -1)) && parseInt(userID.toString()) !== parseInt(selfstatic.id.toString()) && isAuthorizedUser('notBot', userID, null, msg.channel.id) ) {
+        const isBot = (user) ? discordClient.users.get(userID).is_bot : true
+        if ((!isBot || (systemglobal.Discord_Allow_Reactions_From_Bots && systemglobal.Discord_Allow_Reactions_From_Bots.length > 0 && systemglobal.Discord_Allow_Reactions_From_Bots.indexOf(userID) !== -1)) && parseInt(userID.toString()) !== parseInt(selfstatic.id.toString()) && isAuthorizedUser('notBot', userID, null, msg.channel.id)) {
             Logger.printLine("Discord", `Reaction Added: ${emoji.name} - ${msg.guildID}`, "debug", emoji)
             db.safe(`SELECT * FROM discord_reactions WHERE reaction_emoji = ? AND serverid = ?`, [emoji.name, msg.guildID], function (err, discordreact) {
                 if (err) {
@@ -6518,7 +7078,7 @@ This code is publicly released and is restricted by its project license
                                             case 'ReqFile' :
                                                 const input = fullmsg.content.split("**\n*")[0].replace("**🧩 File : ", '')
                                                 jfsGetSF(input.trim().replace(/\n|\r/g, ''), {
-                                                    userID: userID
+                                                    userID: (userID) ? userID : undefined
                                                 })
                                                 break;
                                             case 'RemoveFile' :
