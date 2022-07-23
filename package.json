@@ -26,7 +26,7 @@
     "fast-average-color-node": "^1.0.3",
     "feed-read": "0.0.1",
     "fetch": "^1.1.0",
-    "file-type": "^14.6.0",
+    "file-type": "^16.5.4",
     "flickr-sdk": "^3.10.0",
     "fs-extra": "^9.1.0",
     "get-urls": "^9.2.0",
